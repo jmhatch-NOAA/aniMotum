@@ -119,26 +119,16 @@ route_path <-
       
       what <- match.arg(what)
       
-      if (is.null(barrier)) {
-        # pathroutr needs a land shapefile to create a visibility graph from
-        world_mc <-
-          ne_countries(scale = map_scale, returnclass = "sf") %>%
-          st_transform(crs = 3857) %>%
-          st_make_valid()
-      } else {
-        world_mc <- barrier
-      }
-      
       if (inherits(x, "ssm_df")) {
         # unnest aniMotum ssm object
-        df <- x %>% grab(what)
+        df_sf <- x %>% grab(what, as_sf = TRUE)
         
         # this should be trimmed to reduce computation time
         # base the trimming on the trs data
         # transform locations to barrier projection if user-supplied
-        df_sf <- df %>% 
-          st_as_sf(coords = c("lon", "lat"), crs = 4326) %>% 
-          st_transform(crs = ifelse(is.null(barrier), 3857, st_crs(barrier)$input))
+        # df_sf <- df %>% 
+        #   st_as_sf(coords = c("lon", "lat"), crs = 4326) %>% 
+        #   st_transform(crs = ifelse(is.null(barrier), 3857, st_crs(barrier)$input))
         
       } else if (inherits(x, "sim_fit")) {
         # unnest aniMotum sim_fit object
@@ -146,10 +136,25 @@ route_path <-
         
         # this should be trimmed to reduce computation time
         # base the trimming on the trs data
-        df_sf <- df %>% 
-          st_as_sf(coords = c("lon", "lat"), crs = 4326) %>% 
-          st_transform(crs = ifelse(is.null(barrier), 3857, st_crs(barrier)$input))
+         df_sf <- df %>% 
+           st_as_sf(coords = c("lon", "lat"), crs = 4326) 
         
+      }
+      
+      if (is.null(barrier)) {
+        # pathroutr needs a land shapefile to create a visibility graph from
+        world_mc <-
+          ne_countries(scale = map_scale, returnclass = "sf") %>%
+          st_transform(crs = st_crs(df_sf)) %>%
+          st_make_valid()
+        
+      } else {
+        world_mc <- barrier
+      }
+      
+      if(inherits(x, "sim_fit")) {
+        df_sf <- df_sf |> 
+          st_transform(crs = st_crs(world_mc))
       }
       
       land_region <- suppressWarnings(st_buffer(df_sf, dist = dist) %>% 
@@ -158,7 +163,7 @@ route_path <-
                                         st_intersection(world_mc) %>% 
                                         st_collection_extract('POLYGON') %>% 
                                         st_sf())
-      
+    
       ### if none of the tracks have any points on land, land_region will have no rows in it.
       ### this causes prt_visgaph(land_region, ...) to fail with the following message:
       ###    <simpleError in pathroutr::prt_visgraph(land_region, ...):
@@ -167,12 +172,12 @@ route_path <-
       ### but instead of failing and forcing the user to go back to the original fit_rw locations, 
       ### it is coventient to get the original data packaged in the usual way this function returns it.
       ### so we set a flag to do this that is checked later in the script.
-      if(prod(dim(land_region))==0) { 
-        output_unchanged_locations=TRUE
+      if(prod(dim(land_region)) == 0) { 
+        output_unchanged_locations <- TRUE
         message("all tracks given to reroute_path() are entirely in water:")
         message("not changing any paths.")
       } else {
-        output_unchanged_locations=FALSE
+        output_unchanged_locations <- FALSE
         # create visibility graph
         vis_graph <- pathroutr::prt_visgraph(land_region, ...)
       } 
@@ -218,8 +223,7 @@ route_path <-
         # pull the corrected points from the object and reformat for aniMotum
         df_rrt$pts_rrt <- lapply(df_rrt$pts_fix, function(x) {
           if(!is.null(x)) {
-            st_transform(x, crs = "+proj=merc +datum=WGS84 +units=km +no_defs") %>%
-              select(date, x.se, y.se)
+            x |> select(date, x.se, y.se)
           }
         }) 
         df_rrt <- df_rrt %>% select(id, pts_rrt) %>% ungroup()
