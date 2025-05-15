@@ -79,7 +79,7 @@ route_path <-
   function(x,
            what = c("fitted", "predicted"),
            map_scale = 50,
-           dist = 50000,
+           dist = 2000,
            append = TRUE,
            barrier = NULL,
            ...){
@@ -163,7 +163,7 @@ route_path <-
                                         st_intersection(world_mc) %>% 
                                         st_collection_extract('POLYGON') %>% 
                                         st_sf())
-    
+      
       ### if none of the tracks have any points on land, land_region will have no rows in it.
       ### this causes prt_visgaph(land_region, ...) to fail with the following message:
       ###    <simpleError in pathroutr::prt_visgraph(land_region, ...):
