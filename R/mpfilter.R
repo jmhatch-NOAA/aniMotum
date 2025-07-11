@@ -202,6 +202,7 @@ mpfilter <-
         l_rho_o = factor(NA)
         ),
       list(
+        l_tau = factor(c(NA, NA)),
         l_psi = factor(NA)
         ),
       list(
