@@ -49,7 +49,7 @@ extra_newton <- function(x, n = 1) {
       h <- stats::optimHess(old_opt$par, fn = new_obj$fn, gr = new_obj$gr)
       new_par <- old_opt$par - solve(h, g)
       new_objective <- new_obj$fn(new_par) 
-      if (any(is.na(new_par))) {
+      if (any(is.na(new_par)) | is.na(new_objective)) {
         warning(paste0("Newton step ", i, " resulted in NAs, stopping at ", i - 1))
         break
       } else {
