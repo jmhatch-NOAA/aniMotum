@@ -18,6 +18,9 @@
 ##' 
 extra_newton <- function(x, n = 1) {
   
+  # ensure convergence
+  stopifnot("model(s) must have converged" = all(x$converged == TRUE))
+  
   # ensure n > 0
   stopifnot("n must be greater than 0" = (n > 0))
   
@@ -27,15 +30,18 @@ extra_newton <- function(x, n = 1) {
   # ensure optimizer is nlminb
   stopifnot("optimizer must be nlminb" = all(sapply(X = x$ssm, FUN = function(X) X$optimiser) == "nlminb"))
   
+  # ensure model is mp or crw
+  stopifnot("model(s) must be mp or crw" = all(x$pmodel %in% c('mp', 'crw')))
+  
   # extra Newton steps
   extra_steps <- purrr::map_dfr(.x = 1:nrow(x), .f = function(.x) { 
     
     # accounting
-    x_new = x[.x,]
+    x_new <- x[.x,]
     new_obj <- x_new$ssm[[1]]$tmb
-    old_par <- new_obj$par
-    new_obj$fn(old_par) # initialize TMB
     old_opt <- x_new$ssm[[1]]$opt
+    old_par <- old_opt$par
+    new_obj$fn(old_par) # initialize TMB
     Gr <- new_obj$gr(old_par)
     NLL <- old_opt$objective
     
@@ -75,7 +81,7 @@ extra_newton <- function(x, n = 1) {
       dplyr::arrange(date)
       
     # re-do
-    rep <- TMB::sdreport(new_obj)    
+    rep <- TMB::sdreport(new_obj, silent = TRUE)    
     fxd <- summary(rep, "report")
     fxd <- fxd[which(rownames(fxd) %in% not_map),]
 
@@ -85,42 +91,167 @@ extra_newton <- function(x, n = 1) {
     if("tau" %in% row.names(fxd)) {
       row.names(fxd)[which(row.names(fxd) == "tau")] <- c("tau_x","tau_y")
     }
+    if("D" %in% row.names(fxd)) {
+      row.names(fxd)[which(row.names(fxd) == "D")] <- c("D_x","D_y")
+    }   
+    ## separate speed+se if present
+    if("sf" %in% row.names(fxd)) {
+      sf <- fxd[which(row.names(fxd) == "sf"), ]
+      sf[1,] <- c(NA,NA)
+      if("sp" %in% row.names(fxd)) {
+        sp <- fxd[which(row.names(fxd) == "sp"), ]
+        sp[1,] <- c(NA,NA)
+      }
+      fxd <- fxd[!row.names(fxd) %in% c("sf","sp"),]
+    }
     
-    tmp <- summary(rep, "random")
-    X <- tmp[rownames(tmp) %in% "X",]
-    lg <- tmp[rownames(tmp) %in% "lg",]
+    # different process based on model
+    if (x$pmodel == 'mp') {
+      
+      tmp <- summary(rep, "random")
+      X <- tmp[rownames(tmp) %in% "X",]
+      lg <- tmp[rownames(tmp) %in% "lg",]
+      
+      rdm <- data.frame(cbind(X[seq(1, nrow(X), by = 2), ],
+                              X[seq(2, nrow(X), by = 2), ]
+      ))[, c(1,3,2,4)] 
+      names(rdm) <- c("x","y","x.se","y.se")
+      rdm <- data.frame(rdm, logit_g = lg[,1], logit_g.se = lg[,2], g = plogis(lg[,1]))
+      
+      rdm$id <- unique(d.all$id)
+      rdm$date <- d.all$date
+      rdm$isd <- x_new$ssm[[1]]$isd  
+      rdm <- rdm[, c("id","date","x","y","x.se","y.se", "logit_g", "logit_g.se", "g", "isd")]
+      
+      ## coerce x,y back to sf object
+      rdm <- sf::st_as_sf(rdm, coords = c("x","y"), remove = FALSE)
+      rdm <- sf::st_set_crs(rdm, prj)
+      
+      ## drop x,y as we have the geom
+      rdm <- rdm[, c("id","date","x.se","y.se", "logit_g", "logit_g.se", "g", "isd")]
+      pv <- subset(rdm, !isd)[, -8]
+      #pv$gn <- with(pv, (g - min(g))  / (max(g) - min(g)))
+      fv <- subset(rdm, isd)[, -8]
+      #fv$gn <- with(fv, (g - min(g))  / (max(g) - min(g)))
+      
+      ## calculate AICc
+      AICc <- 2 * length(old_opt[["par"]]) + 2 * old_opt[["objective"]] + 
+        (2 * length(old_opt[["par"]])^2 + 2 * length(old_opt[["par"]])) / (nrow(fv) - length(old_opt[["par"]]))
+      
+    } else if (x$pmodel == 'crw') {
+      
+      model = 'crw'
+      switch(model,
+             rw = {
+               tmp <- summary(rep, "random")
+               rdm <- data.frame(cbind(tmp[seq(1, nrow(tmp), by = 2), ],
+                                       tmp[seq(2, nrow(tmp), by = 2), ]
+               ))[, c(1,3,2,4)] 
+               names(rdm) <- c("x","y","x.se","y.se")
+               
+               rdm$id <- unique(d.all$id)
+               rdm$date <- d.all$date
+               rdm$isd <- d.all$isd
+               
+               rdm <- rdm[, c("id","date","x","y","x.se","y.se","isd")]
+             },
+             crw = {
+               tmp <- summary(rep, "random")
+               loc <- tmp[rownames(tmp) == "mu",]
+               vel <- tmp[rownames(tmp) == "v",]
+               
+               loc <- cbind(loc[seq(1, dim(loc)[1], by = 2),],
+                            loc[seq(2, dim(loc)[1], by = 2),]) 
+               loc <- as.data.frame(loc, row.names = 1:nrow(loc))
+               names(loc) <- c("x", "x.se", "y", "y.se")
+               
+               vel <- cbind(vel[seq(1, dim(vel)[1], by = 2),],
+                            vel[seq(2, dim(vel)[1], by = 2),])
+               vel <- as.data.frame(vel, row.names = 1:nrow(vel))
+               names(vel) <- c("u", "u.se", "v", "v.se")
+               
+               rdm <- cbind(loc, vel)
+               rdm$id <- unique(d.all$id)
+               rdm$date <- d.all$date
+               rdm$isd <- x_new$ssm[[1]]$isd
+               
+               rdm <- rdm[, c("id", "date", "x", "y", 
+                              "x.se", "y.se", "u", "v", "u.se", "v.se", "isd")]
+             })
+      
+      ## coerce x,y back to sf object
+      rdm <- st_as_sf(rdm, coords = c("x","y"), remove = FALSE)
+      rdm <- st_set_crs(rdm, prj)
+      
+      control <- list()
+      control$se <- FALSE
+      message('Assuming ssm_control(se = FALSE), which is the default.')
+      pred_dates <- x_new$ssm[[1]]$predicted$date
+      time.step <- difftime(pred_dates[2:length(pred_dates)], pred_dates[1:(length(pred_dates) - 1)], units = 'hours') |>
+        as.numeric() |>
+        unique()
+      stopifnot(length(time.step) == 1)
+      switch(model,
+             rw = {
+               rdm <- rdm[, c("id", "date", "x.se", "y.se", "isd")]
+               ## fitted
+               fv <- subset(rdm, isd)[, 1:4]
+               ##predicted
+               if(all(!is.na(time.step))) {
+                 pv <- subset(rdm, !isd)[, 1:4]
+               } else {
+                 pv <- NULL
+               }
+             },
+             crw = {
+               if(control$se) {
+                 sf.se <- sf[,2]
+                 sf <- sf[,1]
+                 if(all(!is.na(time.step))) {
+                   sp.se <- sp[,2]
+                   sp <- sp[,1]
+                 }
+               } else {
+                 sf <- as.vector(new_obj$report()$sf)
+                 sp <- as.vector(new_obj$report()$sp)
+                 sf.se <- NA
+                 sp.se <- NA
+               }
+               rdm <- rdm[, c("id", "date", "x.se", "y.se", 
+                              "u", "v", "u.se", "v.se", "isd")]
+               
+               ## fitted
+               fv <- subset(rdm, isd)[, -9]
+               fv$s <- sf
+               fv$s.se <- sf.se
+               
+               ## predicted
+               if(all(!is.na(time.step))) {
+                 pv <- subset(rdm, !isd)[, -9]
+                 pv$s <- sp
+                 pv$s.se <- sp.se
+               } else {
+                 pv <- NULL
+               }
+             })
+      
+      ## calculate AICc
+      npar <- length(old_opt[["par"]])
+      n <- nrow(fv)
+      AICc <- 2 * npar + 2 * old_opt[["objective"]] + 2 * npar * (npar + 1)/(n - npar - 1)
+      
+    }
     
-    rdm <- data.frame(cbind(X[seq(1, nrow(X), by = 2), ],
-                            X[seq(2, nrow(X), by = 2), ]
-    ))[, c(1,3,2,4)] 
-    names(rdm) <- c("x","y","x.se","y.se")
-    rdm <- data.frame(rdm, logit_g = lg[,1], logit_g.se = lg[,2], g = plogis(lg[,1]))
+    ## drop sv's from fxd
+    fxd <- fxd[which(row.names(fxd) != "sv"), ]
     
-    rdm$id <- unique(d.all$id)
-    rdm$date <- d.all$date
-    rdm$isd <- x_new$ssm[[1]]$isd  
-    rdm <- rdm[, c("id","date","x","y","x.se","y.se", "logit_g", "logit_g.se", "g", "isd")]
-    
-    ## coerce x,y back to sf object
-    rdm <- sf::st_as_sf(rdm, coords = c("x","y"), remove = FALSE)
-    rdm <- sf::st_set_crs(rdm, prj)
-    
-    ## drop x,y as we have the geom
-    rdm <- rdm[, c("id","date","x.se","y.se", "logit_g", "logit_g.se", "g", "isd")]
-    pv <- subset(rdm, !isd)[, -8]
-    #pv$gn <- with(pv, (g - min(g))  / (max(g) - min(g)))
-    fv <- subset(rdm, isd)[, -8]
-    #fv$gn <- with(fv, (g - min(g))  / (max(g) - min(g)))
-    
-    AICc <- 2 * length(old_opt[["par"]]) + 2 * old_opt[["objective"]] + (2 * length(old_opt[["par"]])^2 + 2 * length(old_opt[["par"]])) / (nrow(fv) - length(old_opt[["par"]]))
-
     # replace
     x_new$ssm[[1]]$predicted <- pv
     x_new$ssm[[1]]$fitted <- fv
     x_new$ssm[[1]]$par <- fxd
     x_new$ssm[[1]]$rep <- rep
     x_new$ssm[[1]]$AICc <- AICc  
-    
+
     # output
     x_new
 
