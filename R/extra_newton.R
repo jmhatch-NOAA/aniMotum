@@ -21,6 +21,12 @@ extra_newton <- function(x, n = 1) {
   # ensure convergence
   stopifnot("model(s) must have converged" = all(x$converged == TRUE))
   
+  # ensure pdHess
+  pdHess = sapply(X = x$ssm, FUN = function(X) X$rep$pdHess)
+  id_not_pdHess = names(pdHess)[pdHess != TRUE]
+  if (length(id_not_pdHess) > 0) stop(paste0('Hessian is not positive definite for id: ', paste(id_not_pdHess, collapse = ',')))
+  ## stopifnot("Hessian(s) must be positive definite" = all(sapply(X = x$ssm, FUN = function(X) X$rep$pdHess) == TRUE))
+  
   # ensure n > 0
   stopifnot("n must be greater than 0" = (n > 0))
   
@@ -81,7 +87,7 @@ extra_newton <- function(x, n = 1) {
       dplyr::arrange(date)
       
     # re-do
-    rep <- TMB::sdreport(new_obj, silent = TRUE)    
+    rep <- TMB::sdreport(new_obj)    
     fxd <- summary(rep, "report")
     fxd <- fxd[which(rownames(fxd) %in% not_map),]
 
@@ -106,7 +112,7 @@ extra_newton <- function(x, n = 1) {
     }
     
     # different process based on model
-    if (x$pmodel == 'mp') {
+    if (x_new$pmodel == 'mp') {
       
       tmp <- summary(rep, "random")
       X <- tmp[rownames(tmp) %in% "X",]
@@ -138,7 +144,7 @@ extra_newton <- function(x, n = 1) {
       AICc <- 2 * length(old_opt[["par"]]) + 2 * old_opt[["objective"]] + 
         (2 * length(old_opt[["par"]])^2 + 2 * length(old_opt[["par"]])) / (nrow(fv) - length(old_opt[["par"]]))
       
-    } else if (x$pmodel == 'crw') {
+    } else if (x_new$pmodel == 'crw') {
       
       model = 'crw'
       switch(model,
@@ -186,11 +192,7 @@ extra_newton <- function(x, n = 1) {
       control <- list()
       control$se <- FALSE
       message('Assuming ssm_control(se = FALSE), which is the default.')
-      pred_dates <- x_new$ssm[[1]]$predicted$date
-      time.step <- difftime(pred_dates[2:length(pred_dates)], pred_dates[1:(length(pred_dates) - 1)], units = 'hours') |>
-        as.numeric() |>
-        unique()
-      stopifnot(length(time.step) == 1)
+      time.step <- x_new$ssm[[1]]$ts
       switch(model,
              rw = {
                rdm <- rdm[, c("id", "date", "x.se", "y.se", "isd")]
@@ -246,7 +248,7 @@ extra_newton <- function(x, n = 1) {
     fxd <- fxd[which(row.names(fxd) != "sv"), ]
     
     # replace
-    x_new$ssm[[1]]$predicted <- pv
+    if (!is.null(pv)) x_new$ssm[[1]]$predicted <- pv
     x_new$ssm[[1]]$fitted <- fv
     x_new$ssm[[1]]$par <- fxd
     x_new$ssm[[1]]$rep <- rep
