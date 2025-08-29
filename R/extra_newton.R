@@ -34,7 +34,7 @@ extra_newton <- function(x, n = 1) {
   stopifnot("x must be an `ssm_df` fit object" = inherits(x, "ssm_df"))
   
   # ensure optimizer is nlminb
-  stopifnot("optimizer must be nlminb" = all(sapply(X = x$ssm, FUN = function(X) X$optimiser) == "nlminb"))
+  # stopifnot("optimizer must be nlminb" = all(sapply(X = x$ssm, FUN = function(X) X$optimiser) == "nlminb"))
   
   # ensure model is mp or crw
   stopifnot("model(s) must be mp or crw" = all(x$pmodel %in% c('mp', 'crw')))
@@ -49,7 +49,7 @@ extra_newton <- function(x, n = 1) {
     old_par <- old_opt$par
     new_obj$fn(old_par) # initialize TMB
     Gr <- new_obj$gr(old_par)
-    NLL <- old_opt$objective
+    NLL <- if (x_new$ssm[[1]]$optimiser == "nlminb") old_opt$objective else if (x_new$ssm[[1]]$optimiser == "optim") old_opt$value
     
     # check gradients for NAs
     stopifnot("NAs detected in gradient" = !any(is.na(Gr)))
@@ -66,13 +66,21 @@ extra_newton <- function(x, n = 1) {
         break
       } else {
         old_opt$par <- new_par
-        old_opt$objective <- new_objective        
+        if (x_new$ssm[[1]]$optimiser == "nlminb") {
+          old_opt$objective <- new_objective 
+        } else if (x_new$ssm[[1]]$optimiser == "optim") {
+          old_opt$value <- new_objective 
+        }        
       }
     }
   
     # warning message
-    if (old_opt$objective > NLL) message("Newton steps resulted in an increase in the NLL")
-    
+    if (x_new$ssm[[1]]$optimiser == "nlminb") {
+      if (old_opt$objective > NLL) message("Newton steps resulted in an increase in the NLL")
+    } else if (x_new$ssm[[1]]$optimiser == "optim") {
+      if (old_opt$value > NLL) message("Newton steps resulted in an increase in the NLL")
+    }        
+
     # save
     x_new$ssm[[1]]$tmb <- new_obj
     x_new$ssm[[1]]$opt <- old_opt
@@ -141,8 +149,13 @@ extra_newton <- function(x, n = 1) {
       #fv$gn <- with(fv, (g - min(g))  / (max(g) - min(g)))
       
       ## calculate AICc
-      AICc <- 2 * length(old_opt[["par"]]) + 2 * old_opt[["objective"]] + 
-        (2 * length(old_opt[["par"]])^2 + 2 * length(old_opt[["par"]])) / (nrow(fv) - length(old_opt[["par"]]))
+      if (x_new$ssm[[1]]$optimiser == "nlminb") {
+        AICc <- 2 * length(old_opt[["par"]]) + 2 * old_opt[["objective"]] + 
+          (2 * length(old_opt[["par"]])^2 + 2 * length(old_opt[["par"]])) / (nrow(fv) - length(old_opt[["par"]]))
+      } else if (x_new$ssm[[1]]$optimiser == "optim") {
+        AICc <- 2 * length(old_opt[["par"]]) + 2 * old_opt[["value"]] + 
+          (2 * length(old_opt[["par"]])^2 + 2 * length(old_opt[["par"]])) / (nrow(fv) - length(old_opt[["par"]]))
+      }
       
     } else if (x_new$pmodel == 'crw') {
       
@@ -240,8 +253,13 @@ extra_newton <- function(x, n = 1) {
       ## calculate AICc
       npar <- length(old_opt[["par"]])
       n <- nrow(fv)
-      AICc <- 2 * npar + 2 * old_opt[["objective"]] + 2 * npar * (npar + 1)/(n - npar - 1)
-      
+      if (x_new$ssm[[1]]$optimiser == "nlminb") {
+        AICc <- 2 * npar + 2 * old_opt[["objective"]] + 2 * npar * (npar + 1)/(n - npar - 1)
+        
+      } else if (x_new$ssm[[1]]$optimiser == "optim") {
+        AICc <- 2 * npar + 2 * old_opt[["value"]] + 2 * npar * (npar + 1)/(n - npar - 1)
+      }
+
     }
     
     ## drop sv's from fxd
@@ -252,7 +270,7 @@ extra_newton <- function(x, n = 1) {
     x_new$ssm[[1]]$fitted <- fv
     x_new$ssm[[1]]$par <- fxd
     x_new$ssm[[1]]$rep <- rep
-    x_new$ssm[[1]]$AICc <- AICc  
+    x_new$ssm[[1]]$AICc <- as.numeric(AICc)  
 
     # output
     x_new
